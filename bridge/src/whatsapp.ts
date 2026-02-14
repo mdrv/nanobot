@@ -122,6 +122,13 @@ export class WhatsAppClient {
 
         const isGroup = msg.key.remoteJid?.endsWith('@g.us') || false;
 
+        // Group messages: only proceed if user is mentioned
+        if (isGroup) {
+          const userJid = this.sock?.user?.id;
+          const mentions: string[] = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+          if (!await this.isUserMentioned(mentions, userJid || '')) continue;
+        }
+
         this.options.onMessage({
           id: msg.key.id || '',
           sender: msg.key.remoteJid || '',
@@ -169,6 +176,26 @@ export class WhatsAppClient {
     }
 
     return null;
+  }
+
+  /** Convert LID/JID to sanitized phone number (digits only) */
+  private async resolveAndSanitizePhoneNumber(jid: string): Promise<string> {
+    let resolved = jid;
+    if (jid.endsWith('@lid') && this.sock?.signalRepository?.lidMapping) {
+      const pn = await this.sock.signalRepository.lidMapping.getPNForLID(jid);
+      if (pn) resolved = pn;
+    }
+    return resolved.replace(/:\d+@s\.whatsapp\.net$/, '').replace('@s.whatsapp.net', '');
+  }
+
+  /** Check if user is mentioned (handles LID conversion) */
+  private async isUserMentioned(mentions: string[], userJid: string): Promise<boolean> {
+    const userPn = await this.resolveAndSanitizePhoneNumber(userJid);
+    for (const mention of mentions) {
+      const mentionPn = await this.resolveAndSanitizePhoneNumber(mention);
+      if (mentionPn === userPn) return true;
+    }
+    return false;
   }
 
   async sendMessage(to: string, text: string): Promise<void> {
