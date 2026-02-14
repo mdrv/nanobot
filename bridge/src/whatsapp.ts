@@ -9,6 +9,7 @@ import makeWASocket, {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
+  WASocket,
 } from '@whiskeysockets/baileys';
 
 import { Boom } from '@hapi/boom';
@@ -34,7 +35,7 @@ export interface WhatsAppClientOptions {
 }
 
 export class WhatsAppClient {
-  private sock: any = null;
+  private sock: WASocket | null = null;
   private options: WhatsAppClientOptions;
   private reconnecting = false;
 
