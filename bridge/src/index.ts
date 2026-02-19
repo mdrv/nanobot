@@ -19,7 +19,7 @@ if (!globalThis.crypto) {
   (globalThis as any).crypto = webcrypto;
 }
 
-import { BridgeServer } from './server.js';
+import { BridgeServer } from './kotaete.js';
 import { homedir } from 'os';
 import { join } from 'path';
 

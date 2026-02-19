@@ -4,25 +4,19 @@
  */
 
 import { WebSocketServer, WebSocket } from 'ws';
-import { WhatsAppClient, InboundMessage } from './whatsapp.js';
+import { WhatsAppClient } from './whatsapp.js';
+import { InboundMessage, RawMessage, SendCommand, BridgeMessage } from './types.js';
 
-interface SendCommand {
-  type: 'send';
-  to: string;
-  text: string;
-}
-
-interface BridgeMessage {
-  type: 'message' | 'status' | 'qr' | 'error';
-  [key: string]: unknown;
-}
-
+/**
+ * Base bridge server - minimal WebSocket server with WhatsApp client.
+ * Can be extended for additional features (e.g., Kotaete quiz system).
+ */
 export class BridgeServer {
-  private wss: WebSocketServer | null = null;
-  private wa: WhatsAppClient | null = null;
-  private clients: Set<WebSocket> = new Set();
+  protected wss: WebSocketServer | null = null;
+  protected wa: WhatsAppClient | null = null;
+  protected clients: Set<WebSocket> = new Set();
 
-  constructor(private port: number, private authDir: string, private token?: string) {}
+  constructor(protected port: number, protected authDir: string, protected token?: string) {}
 
   async start(): Promise<void> {
     // Bind to localhost only — never expose to external network
@@ -36,45 +30,49 @@ export class BridgeServer {
       onMessage: (msg) => this.broadcast({ type: 'message', ...msg }),
       onQR: (qr) => this.broadcast({ type: 'qr', qr }),
       onStatus: (status) => this.broadcast({ type: 'status', status }),
+      onIgnoredGroupMessage: (msg) => this.handleIgnoredGroupMessage(msg),
     });
 
     // Handle WebSocket connections
-    this.wss.on('connection', (ws) => {
-      if (this.token) {
-        // Require auth handshake as first message
-        const timeout = setTimeout(() => ws.close(4001, 'Auth timeout'), 5000);
-        ws.once('message', (data) => {
-          clearTimeout(timeout);
-          try {
-            const msg = JSON.parse(data.toString());
-            if (msg.type === 'auth' && msg.token === this.token) {
-              console.log('🔗 Python client authenticated');
-              this.setupClient(ws);
-            } else {
-              ws.close(4003, 'Invalid token');
-            }
-          } catch {
-            ws.close(4003, 'Invalid auth message');
-          }
-        });
-      } else {
-        console.log('🔗 Python client connected');
-        this.setupClient(ws);
-      }
-    });
+    this.wss.on('connection', (ws) => this.handleConnection(ws));
 
     // Connect to WhatsApp
     await this.wa.connect();
   }
 
-  private setupClient(ws: WebSocket): void {
+  /** Handle new WebSocket connection - can be overridden in subclasses */
+  protected handleConnection(ws: WebSocket): void {
+    if (this.token) {
+      // Require auth handshake as first message
+      const timeout = setTimeout(() => ws.close(4001, 'Auth timeout'), 5000);
+      ws.once('message', (data) => {
+        clearTimeout(timeout);
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg.type === 'auth' && msg.token === this.token) {
+            console.log('🔗 Python client authenticated');
+            this.setupClient(ws);
+          } else {
+            ws.close(4003, 'Invalid token');
+          }
+        } catch {
+          ws.close(4003, 'Invalid auth message');
+        }
+      });
+    } else {
+      console.log('🔗 Python client connected');
+      this.setupClient(ws);
+    }
+  }
+
+  /** Setup client message handlers - can be overridden in subclasses */
+  protected setupClient(ws: WebSocket): void {
     this.clients.add(ws);
 
     ws.on('message', async (data) => {
       try {
-        const cmd = JSON.parse(data.toString()) as SendCommand;
-        await this.handleCommand(cmd);
-        ws.send(JSON.stringify({ type: 'sent', to: cmd.to }));
+        const cmd = JSON.parse(data.toString());
+        await this.handleCommand(cmd, ws);
       } catch (error) {
         console.error('Error handling command:', error);
         ws.send(JSON.stringify({ type: 'error', error: String(error) }));
@@ -92,13 +90,23 @@ export class BridgeServer {
     });
   }
 
-  private async handleCommand(cmd: SendCommand): Promise<void> {
-    if (cmd.type === 'send' && this.wa) {
+  /** Handle incoming commands - can be overridden in subclasses */
+  protected async handleCommand(cmd: any, ws: WebSocket): Promise<void> {
+    if (!this.wa) return;
+
+    if (cmd.type === 'send') {
       await this.wa.sendMessage(cmd.to, cmd.text);
+      ws.send(JSON.stringify({ type: 'sent', to: cmd.to }));
     }
   }
 
-  private broadcast(msg: BridgeMessage): void {
+  /** Handle ignored group messages - override in subclasses */
+  protected async handleIgnoredGroupMessage(msg: RawMessage): Promise<void> {
+    // Base implementation does nothing
+  }
+
+  /** Broadcast message to all connected clients */
+  protected broadcast(msg: BridgeMessage): void {
     const data = JSON.stringify(msg);
     for (const client of this.clients) {
       if (client.readyState === WebSocket.OPEN) {

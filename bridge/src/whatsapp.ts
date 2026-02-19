@@ -16,23 +16,9 @@ import { Boom } from '@hapi/boom';
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
 
+import { InboundMessage, RawMessage, WhatsAppClientOptions } from './types.js';
+
 const VERSION = '0.1.0';
-
-export interface InboundMessage {
-  id: string;
-  sender: string;
-  pn: string;
-  content: string;
-  timestamp: number;
-  isGroup: boolean;
-}
-
-export interface WhatsAppClientOptions {
-  authDir: string;
-  onMessage: (msg: InboundMessage) => void;
-  onQR: (qr: string) => void;
-  onStatus: (status: string) => void;
-}
 
 export class WhatsAppClient {
   private sock: WASocket | null = null;
@@ -126,19 +112,36 @@ export class WhatsAppClient {
         if (isGroup) {
           const userJid = this.sock?.user?.id;
           const mentions: string[] = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
-          if (!await this.isUserMentioned(mentions, userJid || '')) continue;
-        }
 
-        this.options.onMessage({
-          id: msg.key.id || '',
-          sender: msg.key.remoteJid || '',
-          pn: msg.key.remoteJidAlt || '',
-          content,
-          timestamp: msg.messageTimestamp as number,
-          isGroup,
-        });
+          if (await this.isUserMentioned(mentions, userJid || '')) {
+            // Mentioned: forward to main handler
+            this.options.onMessage(this.createInboundMessage(msg, content, isGroup));
+          } else if (this.options.onIgnoredGroupMessage) {
+            // Not mentioned: forward to kotaete if handler exists
+            this.options.onIgnoredGroupMessage({
+              message: msg.message,
+              key: msg.key,
+              messageTimestamp: msg.messageTimestamp as number,
+            });
+          }
+        } else {
+          // Private messages: always forward
+          this.options.onMessage(this.createInboundMessage(msg, content, isGroup));
+        }
       }
     });
+  }
+
+  /** Create InboundMessage object from raw message */
+  private createInboundMessage(msg: any, content: string, isGroup: boolean): InboundMessage {
+    return {
+      id: msg.key.id || '',
+      sender: msg.key.remoteJid || '',
+      pn: msg.key.remoteJidAlt || '',
+      content,
+      timestamp: msg.messageTimestamp as number,
+      isGroup,
+    };
   }
 
   private extractMessageContent(msg: any): string | null {
@@ -204,6 +207,14 @@ export class WhatsAppClient {
     }
 
     await this.sock.sendMessage(to, { text });
+  }
+
+  async sendReact(to: string, emoji: string, messageKey: { id: string; remoteJid: string }): Promise<void> {
+    if (!this.sock) {
+      throw new Error('Not connected');
+    }
+
+    await this.sock.sendMessage(to, { react: { text: emoji, key: messageKey } });
   }
 
   async disconnect(): Promise<void> {
