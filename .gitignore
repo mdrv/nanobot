@@ -19,5 +19,4 @@ poetry.lock
 .pytest_cache/
 tests/
 botpy.log
-
 node_modules/
